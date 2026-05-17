@@ -140,17 +140,7 @@ Calls Google Gemini 2.5 Pro with full field context (NDVI, soil, weather, suitab
 - Water saving percentage and revenue boost estimates
 - PDF export of the complete crop plan
 
-### Edge Case Detection
 
-The system detects unsuitable regions and blocks crop planning:
-
-| Edge Case | Detection Method | Threshold |
-|-----------|-----------------|-----------|
-| Water bodies | ESA WorldCover "Water" land use percentage | 80% or more |
-| Extreme deserts | Annual rainfall from CHIRPS via GEE | Below 50mm, or keyword match (Sahara, Atacama, etc.) |
-| Polar regions | Average latitude of polygon coordinates | Above 66 degrees, or keyword match (Antarctica, etc.) |
-| High altitude | Elevation from SRTM via GEE | Above 5000m |
-| Urban regions | ESA WorldCover "Built-up" percentage | 30% or more (switches to urban analytics mode) |
 
 ### Region Comparison
 
@@ -252,7 +242,7 @@ Engine          (Weather)      (Soil Data)     (Maps API)    ESA WorldCover
 |--------|-------|-------|
 | Google Gemini 2.5 Pro | Large language model | Crop planning with native plant enforcement, field analysis, region-specific recommendations |
 
-## Edge Functions
+## Functions
 
 | Function | Method | Input | Output | External Calls |
 |----------|--------|-------|--------|----------------|
@@ -315,7 +305,7 @@ supabase/functions/
 
 ## Configuration
 
-| Secret | Purpose |
+| Variabel | Purpose |
 |--------|---------|
 | MAPBOX_TOKEN | Mapbox GL JS map rendering, geocoding, satellite tiles |
 | GEE_SERVICE_ACCOUNT_JSON | Google Earth Engine service account credentials (JSON key) |
