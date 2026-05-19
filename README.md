@@ -342,4 +342,5 @@ Open-Meteo and ISRIC SoilGrids are free public APIs that do not require API keys
 
 ## License
 
-MIT License
+GNU AFFERO GENERAL PUBLIC LICENSE
+   Version 3, 19 November 2007
