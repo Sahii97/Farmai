@@ -26,3 +26,6 @@ verify_jwt = false
 
 [functions.analyze-field]
 verify_jwt = false
+
+[functions.mapbox-geocode]
+verify_jwt = false
