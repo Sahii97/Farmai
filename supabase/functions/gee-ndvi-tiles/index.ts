@@ -205,7 +205,7 @@ serve(async (req) => {
     if (!mapResp.ok) {
       const t = await mapResp.text();
       console.error("GEE maps error:", mapResp.status, t);
-      throw new Error(`GEE map tiles failed (${mapResp.status}): ${t.slice(0, 500)}`);
+      throw new Error("GEE_TILE_FAILED");
     }
 
     const mapData = await mapResp.json();
@@ -221,7 +221,7 @@ serve(async (req) => {
   } catch (e) {
     console.error("gee-ndvi-tiles error:", e);
     return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
+      JSON.stringify({ error: "An internal error occurred while generating NDVI tiles" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
