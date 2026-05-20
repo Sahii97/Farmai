@@ -16,6 +16,7 @@ const MAP_STYLES = {
   satellite: "mapbox://styles/mapbox/satellite-streets-v12"
 };
 
+const PUBLIC_MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_TOKEN || "";
 const MAP_POS_KEY = "map-last-position";
 
 function saveMapPosition(map: mapboxgl.Map) {
@@ -56,6 +57,7 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const [mapToken, setMapToken] = useState("");
+  const [mapTokenError, setMapTokenError] = useState("");
   const [mapLoaded, setMapLoaded] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [drawVertices, setDrawVertices] = useState<[number, number][]>([]);
@@ -77,11 +79,25 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
   useEffect(() => { onUpdateFieldRef.current = onUpdateField; }, [onUpdateField]);
 
   useEffect(() => {
+    if (PUBLIC_MAPBOX_TOKEN) {
+      setMapToken(PUBLIC_MAPBOX_TOKEN);
+      setMapTokenError("");
+      return;
+    }
+
     const fetchToken = async () => {
       try {
         const { data } = await supabase.functions.invoke("get-mapbox-token");
-        if (data?.token) setMapToken(data.token);
-      } catch (e) { console.error("Failed to fetch mapbox token", e); }
+        if (data?.token) {
+          setMapToken(data.token);
+          setMapTokenError("");
+          return;
+        }
+        setMapTokenError("أضف VITE_MAPBOX_TOKEN في Vercel حتى تظهر الخريطة.");
+      } catch (e) {
+        console.error("Failed to fetch mapbox token", e);
+        setMapTokenError("أضف VITE_MAPBOX_TOKEN في Vercel حتى تظهر الخريطة.");
+      }
     };
     fetchToken();
   }, []);
@@ -441,7 +457,14 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
 
   return (
     <div className="relative w-full h-full">
-      {!mapToken && <div className="absolute inset-0 flex items-center justify-center bg-background z-10" dir="rtl"><div className="text-muted-foreground text-sm animate-pulse">جاري تحميل الخريطة...</div></div>}
+      {!mapToken && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background z-10 p-6" dir="rtl">
+          <div className="max-w-xs text-center space-y-2">
+            <div className="text-foreground text-sm font-semibold">{mapTokenError || "جاري تحميل الخريطة..."}</div>
+            {mapTokenError && <div className="text-muted-foreground text-xs leading-5">من إعدادات Vercel أضف متغير بيئة باسم VITE_MAPBOX_TOKEN وضع قيمة Mapbox public token.</div>}
+          </div>
+        </div>
+      )}
       <div ref={mapContainer} className="w-full h-full" />
       <SearchBar onSearch={() => {}} mapToken={mapToken} onLocationSelect={handleLocationSelect} />
       <MapToolbar onZoomIn={() => mapRef.current?.zoomIn()} onZoomOut={() => mapRef.current?.zoomOut()} onStyleChange={handleStyleChange}
