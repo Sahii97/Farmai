@@ -90,25 +90,19 @@ const NewFieldDialog = ({ coordinates, mapToken, existingFieldColors, onSave, on
   const estimatedAcres = calculateAreaAcres(coordinates);
   const estimatedHa = Math.round((estimatedAcres / 2.47105) * 10) / 10;
 
-  // Auto-detect region type using GEE land use + reverse geocode
+  // Auto-detect region type using GEE land use + reverse geocode (server-proxied)
   useEffect(() => {
     const detect = async () => {
       setDetecting(true);
-      let token = mapToken;
-      if (!token) {
-        const { data } = await supabase.functions.invoke("get-mapbox-token");
-        token = data?.token;
-      }
 
       const center = coordinates.reduce(
         (acc, c) => [acc[0] + c[0] / coordinates.length, acc[1] + c[1] / coordinates.length], [0, 0]
       );
 
-      // Parallel: reverse geocode + GEE land use
-      const geocodePromise = token
-        ? fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${center[0]},${center[1]}.json?access_token=${token}&limit=1`)
-            .then(r => r.json()).catch(() => null)
-        : Promise.resolve(null);
+      // Parallel: reverse geocode (via edge proxy) + GEE land use
+      const geocodePromise = supabase.functions
+        .invoke("mapbox-geocode", { body: { mode: "reverse", lng: center[0], lat: center[1], limit: 1 } })
+        .then(r => r.data).catch(() => null);
 
       const geePromise = supabase.functions.invoke("gee-analytics", {
         body: { polygon: coordinates, analyses: ["land_use"] },
