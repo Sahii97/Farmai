@@ -11,6 +11,7 @@ import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
 } from "recharts";
+import { getFreshLocalCacheValue, hasNdviPayload, hasSoilPayload, isFallbackPayload, setLocalCache } from "@/lib/query-cache";
 
 const URBAN_CROPS = ["Residential", "Commercial", "Park / Garden", "Industrial", "Mixed Use", "Rooftop / Terrace", "Community Garden"];
 
@@ -65,6 +66,7 @@ const weatherCodes: Record<number, string> = {
 const ANALYSIS_CACHE_KEY = "region-ai-analysis-cache";
 const NDVI_CACHE_KEY = "region-ndvi-cache";
 const SOIL_CACHE_KEY = "region-soil-cache";
+const QUERY_CACHE_TTL_MS = 60 * 60 * 1000;
 
 type AnalysisBlock =
   | { type: "markdown"; content: string }
@@ -257,9 +259,8 @@ const FieldDetailView = ({ field, onBack, onEditBoundary }: FieldDetailViewProps
 
   // Fetch soil data
   useEffect(() => {
-    const cache = getCache<SoilData>(SOIL_CACHE_KEY);
-    const cached = cache[field.id];
-    if (cached && Date.now() - cached.timestamp < 3600000) { setSoilData(cached.data); return; }
+    const cached = getFreshLocalCacheValue<SoilData>(SOIL_CACHE_KEY, field.id, QUERY_CACHE_TTL_MS);
+    if (cached) { setSoilData(cached); return; }
     const fetchSoil = async () => {
       setSoilLoading(true);
       try {
@@ -267,9 +268,15 @@ const FieldDetailView = ({ field, onBack, onEditBoundary }: FieldDetailViewProps
           body: { lat: fieldCenter.lat, lon: fieldCenter.lng },
         });
         if (error) throw error;
-        setSoilData(data);
-        setCache(SOIL_CACHE_KEY, field.id, data);
-      } catch (e) { console.error("Soil data error:", e); setSoilData(null); }
+        if (hasSoilPayload(data)) {
+          setSoilData(data);
+          setLocalCache(SOIL_CACHE_KEY, field.id, data);
+        } else if (isFallbackPayload(data)) {
+          setSoilData(cached ?? null);
+        } else {
+          setSoilData(null);
+        }
+      } catch (e) { console.error("Soil data error:", e); setSoilData(cached ?? null); }
       finally { setSoilLoading(false); }
     };
     fetchSoil();
@@ -277,9 +284,8 @@ const FieldDetailView = ({ field, onBack, onEditBoundary }: FieldDetailViewProps
 
   // Load cached NDVI or fetch
   useEffect(() => {
-    const cache = getCache<NdviStats>(NDVI_CACHE_KEY);
-    const cached = cache[field.id];
-    if (cached && Date.now() - cached.timestamp < 3600000) { setNdviStats(cached.data); }
+    const cached = getFreshLocalCacheValue<NdviStats>(NDVI_CACHE_KEY, field.id, QUERY_CACHE_TTL_MS);
+    if (cached) { setNdviStats(cached); }
     else { setNdviStats(null); fetchNdviStats(); }
   }, [field.id]);
 
@@ -288,7 +294,13 @@ const FieldDetailView = ({ field, onBack, onEditBoundary }: FieldDetailViewProps
     try {
       const { data, error } = await supabase.functions.invoke("analyze-field", { body: { polygon: field.coordinates[0] } });
       if (error) throw error;
-      if (data?.mean_ndvi !== undefined) { setNdviStats(data); setCache(NDVI_CACHE_KEY, field.id, data); }
+      if (hasNdviPayload(data) && data?.mean_ndvi !== undefined) {
+        setNdviStats(data);
+        setLocalCache(NDVI_CACHE_KEY, field.id, data);
+      } else if (isFallbackPayload(data)) {
+        const cached = getFreshLocalCacheValue<NdviStats>(NDVI_CACHE_KEY, field.id, QUERY_CACHE_TTL_MS);
+        setNdviStats(cached);
+      }
     } catch (e) { console.error("NDVI analysis error:", e); }
     finally { setNdviLoading(false); }
   };
