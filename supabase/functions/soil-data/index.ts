@@ -93,7 +93,14 @@ serve(async (req) => {
 
   try {
     const { lat, lon } = await req.json();
-    if (lat == null || lon == null) throw new Error("lat and lon required");
+    if (typeof lat !== "number" || typeof lon !== "number" || !isFinite(lat) || !isFinite(lon)) {
+      return new Response(JSON.stringify({ error: "lat and lon must be numbers" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      return new Response(JSON.stringify({ error: "lat/lon out of range" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
 
     const propParams = PROPERTIES.map(p => `property=${p}`).join("&");
     const depthParams = DEPTHS.map(d => `depth=${d}`).join("&");
@@ -207,7 +214,7 @@ serve(async (req) => {
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     console.error("soil-data error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
+    return new Response(JSON.stringify({ error: "An internal error occurred while fetching soil data" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
