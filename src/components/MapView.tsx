@@ -63,7 +63,6 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
   const [showFields, setShowFields] = useState(true);
   const [showNdvi, setShowNdvi] = useState(false);
   const [geeNdviTileUrl, setGeeNdviTileUrl] = useState<string | null>(null);
-  const [geeNdviToken, setGeeNdviToken] = useState<string | null>(null);
   const editMarkersRef = useRef<mapboxgl.Marker[]>([]);
   const drawModeRef = useRef(false);
   const editBoundaryFieldIdRef = useRef(editBoundaryFieldId);
@@ -194,8 +193,7 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
 
     // Add source if missing
     if (!map.getSource(ndviSourceId)) {
-      const authenticatedUrl = `${geeNdviTileUrl}?access_token=${geeNdviToken}`;
-      map.addSource(ndviSourceId, { type: "raster", tiles: [authenticatedUrl], tileSize: 256 });
+      map.addSource(ndviSourceId, { type: "raster", tiles: [geeNdviTileUrl], tileSize: 256 });
 
       // Log tile loading errors
       map.on("error", (e: any) => {
@@ -221,7 +219,7 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
       },
       insertBefore
     );
-  }, [showNdvi, mapLoaded, allFields, geeNdviTileUrl, geeNdviToken]);
+  }, [showNdvi, mapLoaded, allFields, geeNdviTileUrl]);
 
   // Drawing mode with Backspace undo
   useEffect(() => {
@@ -370,7 +368,6 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
     setMapLoaded(false);
     // Clear NDVI layer/source since style change removes all layers
     setGeeNdviTileUrl(null);
-    setGeeNdviToken(null);
     map.setStyle(MAP_STYLES[style]);
     map.once("style.load", () => { if (style === "satellite") hideExtraLabels(map); setMapLoaded(true); refreshFieldLayers(map, allFields, selectedFields); });
   };
@@ -419,7 +416,6 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
           try { if (map.getSource("gee-ndvi-source")) map.removeSource("gee-ndvi-source"); } catch {}
         }
         setGeeNdviTileUrl(data.tileUrl);
-        setGeeNdviToken(data.token);
         toast.success("NDVI layer loaded");
       } else if (data?.error) {
         throw new Error(data.error);
