@@ -1,10 +1,36 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
+
+const GEE_RETRY_DELAYS_MS = [800, 1800, 4000];
+const TOKEN_REFRESH_SKEW_MS = 60_000;
+const TIMESERIES_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+let cachedToken: { token: string; expiresAt: number } | null = null;
+const timeseriesCache = new Map<string, { data: any; expiresAt: number }>();
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildCacheKey(coords: [number, number][]) {
+  return JSON.stringify(coords.map(([lon, lat]) => [Number(lon.toFixed(5)), Number(lat.toFixed(5))]));
+}
+
+function getCachedTimeseries(key: string, allowStale = false) {
+  const cached = timeseriesCache.get(key);
+  if (!cached) return null;
+  if (!allowStale && cached.expiresAt < Date.now()) return null;
+  return cached.data;
+}
+
+function setCachedTimeseries(key: string, data: any) {
+  timeseriesCache.set(key, { data, expiresAt: Date.now() + TIMESERIES_CACHE_TTL_MS });
+}
 
 function validatePolygon(coords: any): string | null {
   if (!Array.isArray(coords) || coords.length < 3) return "Polygon must have at least 3 vertices";
@@ -43,6 +69,9 @@ async function createJwt(email: string, privateKeyPem: string, scopes: string[])
 }
 
 async function getGeeAccessToken(): Promise<string> {
+  if (cachedToken && cachedToken.expiresAt > Date.now() + TOKEN_REFRESH_SKEW_MS) {
+    return cachedToken.token;
+  }
   const raw = Deno.env.get("GEE_SERVICE_ACCOUNT_JSON");
   if (!raw) throw new Error("GEE_SERVICE_ACCOUNT_JSON secret not configured");
   const sa = JSON.parse(raw);
@@ -53,7 +82,12 @@ async function getGeeAccessToken(): Promise<string> {
     body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`,
   });
   if (!resp.ok) { const t = await resp.text(); throw new Error(`OAuth failed: ${t}`); }
-  return (await resp.json()).access_token;
+  const json = await resp.json();
+  cachedToken = {
+    token: json.access_token,
+    expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000,
+  };
+  return cachedToken.token;
 }
 
 // ── Expression flattener ─────────────────────────────────────────
@@ -85,20 +119,38 @@ function flattenExpression(nested: any): { values: Record<string, any>; result: 
 
 async function computeValue(token: string, projectId: string, expr: any): Promise<any> {
   const flat = flattenExpression(expr);
-  const resp = await fetch(
-    `https://earthengine.googleapis.com/v1/projects/${projectId}/value:compute`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ expression: flat }),
+  let lastError = "";
+  for (let attempt = 0; attempt <= GEE_RETRY_DELAYS_MS.length; attempt++) {
+    const resp = await fetch(
+      `https://earthengine.googleapis.com/v1/projects/${projectId}/value:compute`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ expression: flat }),
+        signal: AbortSignal.timeout(15_000),
+      }
+    );
+
+    if (resp.ok) {
+      return resp.json();
     }
-  );
-  if (!resp.ok) {
-    const t = await resp.text();
-    console.error("GEE compute error:", resp.status, t);
-    throw new Error(`GEE compute failed (${resp.status}): ${t}`);
+
+    lastError = await resp.text();
+    const retryable = resp.status === 429 || resp.status >= 500 || lastError.includes("RESOURCE_EXHAUSTED");
+    if (retryable && attempt < GEE_RETRY_DELAYS_MS.length) {
+      await sleep(GEE_RETRY_DELAYS_MS[attempt] + Math.floor(Math.random() * 300));
+      continue;
+    }
+
+    if (retryable) {
+      throw new Error(`GEE_RATE_LIMITED: ${lastError}`);
+    }
+
+    console.error("GEE compute error:", resp.status, lastError);
+    throw new Error(`GEE compute failed (${resp.status}): ${lastError}`);
   }
-  return resp.json();
+
+  throw new Error(`GEE_RATE_LIMITED: ${lastError || "GEE compute failed after retries"}`);
 }
 
 function makeGeometry(coords: [number, number][]) {
@@ -295,6 +347,14 @@ serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    const cacheKey = buildCacheKey(coords);
+    const cached = getCachedTimeseries(cacheKey);
+    if (cached) {
+      return new Response(JSON.stringify({ ...cached, cached: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+      });
+    }
+
     const token = await getGeeAccessToken();
     const projectId = Deno.env.get("GEE_PROJECT_ID") || "earthengine-legacy";
 
@@ -341,31 +401,25 @@ serve(async (req) => {
 
     // Step 3: For each image, compute NDVI mean and get timestamp in parallel
     const imageCount = Math.min(count, 20);
-    const promises: Promise<{ date: string; ndvi: number | null }>[] = [];
-
+    const rawTimeseries: { date: string; ndvi: number | null }[] = [];
     for (let i = 0; i < imageCount; i++) {
       const { timestamp, ndviVal } = buildImageNdviAtIndex(listExpr, i, geometry);
 
-      promises.push(
-        Promise.all([
-          computeValue(token, projectId, timestamp),
-          computeValue(token, projectId, ndviVal),
-        ]).then(([tsResult, ndviResult]) => {
-          const ts = tsResult?.result;
-          const ndvi = ndviResult?.result;
-          const dateStr = ts ? new Date(ts).toISOString().split("T")[0] : null;
-          return {
-            date: dateStr || "unknown",
-            ndvi: ndvi != null ? Math.round(ndvi * 1000) / 1000 : null,
-          };
-        }).catch((e) => {
-          console.error(`Image ${i} error:`, e.message);
-          return { date: "unknown", ndvi: null };
-        })
-      );
+      try {
+        const tsResult = await computeValue(token, projectId, timestamp);
+        const ndviResult = await computeValue(token, projectId, ndviVal);
+        const ts = tsResult?.result;
+        const ndvi = ndviResult?.result;
+        const dateStr = ts ? new Date(ts).toISOString().split("T")[0] : null;
+        rawTimeseries.push({
+          date: dateStr || "unknown",
+          ndvi: ndvi != null ? Math.round(ndvi * 1000) / 1000 : null,
+        });
+      } catch (e) {
+        console.error(`Image ${i} error:`, e instanceof Error ? e.message : e);
+        rawTimeseries.push({ date: "unknown", ndvi: null });
+      }
     }
-
-    const rawTimeseries = await Promise.all(promises);
     const timeseries = rawTimeseries
       .filter((p) => p.date !== "unknown" && p.ndvi !== null)
       .sort((a, b) => a.date.localeCompare(b.date));
@@ -373,14 +427,17 @@ serve(async (req) => {
     console.log(`Time-series: ${timeseries.length} valid observations`);
 
     if (timeseries.length === 0) {
-      return new Response(JSON.stringify({
+      const emptyPayload = {
         timeseries: [],
         growth_rate: null,
         canopy_cover: null,
         biomass_estimate: null,
         growth_stage: null,
         error: "NDVI computation returned no valid results",
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        fallback: true,
+      };
+      const stale = getCachedTimeseries(cacheKey, true);
+      return new Response(JSON.stringify(stale ? { ...stale, stale: true, error: emptyPayload.error, fallback: true } : emptyPayload), { headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
     }
 
     // Compute derived indicators
@@ -414,7 +471,7 @@ serve(async (req) => {
 
     console.log(`Results: ${timeseries.length} obs, latest=${latestNdvi}, stage=${growth_stage}, rate=${growth_rate}`);
 
-    return new Response(JSON.stringify({
+    const payload = {
       timeseries,
       growth_rate,
       canopy_cover,
@@ -424,12 +481,25 @@ serve(async (req) => {
       latest_ndvi: latestNdvi,
       mean_ndvi: Math.round(meanNdvi * 1000) / 1000,
       date_range: `${startDate} to ${endDate}`,
-    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    };
+    setCachedTimeseries(cacheKey, payload);
+
+    return new Response(JSON.stringify(payload), { headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" } });
 
   } catch (e) {
     console.error("ndvi-timeseries error:", e);
-    return new Response(JSON.stringify({ error: "An internal error occurred while computing NDVI time-series" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    const message = e instanceof Error ? e.message : String(e);
+    return new Response(JSON.stringify({
+      timeseries: [],
+      growth_rate: null,
+      canopy_cover: null,
+      biomass_estimate: null,
+      growth_stage: null,
+      error: message.includes("GEE_RATE_LIMITED") ? "RATE_LIMITED" : "SERVICE_UNAVAILABLE",
+      fallback: true,
+      message: "Satellite time-series are temporarily busy. Please retry shortly.",
+    }), {
+      status: 200, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
   }
 });
