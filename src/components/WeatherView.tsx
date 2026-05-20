@@ -12,6 +12,7 @@ import { format } from "date-fns";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { supabase } from "@/integrations/supabase/client";
+import { getFreshLocalCacheValue, hasGeeAnalyticsPayload, hasNdviPayload, hasSoilPayload, isFallbackPayload, setLocalCache } from "@/lib/query-cache";
 
 const CHART_GOLD = "#C6B77E";
 const CHART_CREAM = "#F7F4E4";
@@ -123,15 +124,8 @@ interface WeatherViewProps {
 }
 
 const GEE_ANALYTICS_CACHE_KEY = "gee-analytics-cache";
-
-function getGeeCache(): Record<string, { data: any; timestamp: number }> {
-  try { const c = localStorage.getItem(GEE_ANALYTICS_CACHE_KEY); return c ? JSON.parse(c) : {}; } catch { return {}; }
-}
-function setGeeCache(fieldId: string, data: any) {
-  const cache = getGeeCache();
-  cache[fieldId] = { data, timestamp: Date.now() };
-  localStorage.setItem(GEE_ANALYTICS_CACHE_KEY, JSON.stringify(cache));
-}
+const QUERY_CACHE_TTL_MS = 60 * 60 * 1000;
+const SOIL_CACHE_KEY = "region-soil-cache";
 
 
 const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProps) => {
@@ -174,10 +168,9 @@ const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProp
   // Fetch GEE analytics
   useEffect(() => {
     if (!effectiveField) { setGeeData(null); return; }
-    const cache = getGeeCache();
-    const cached = cache[effectiveField.id];
-    if (cached && Date.now() - cached.timestamp < 3600000) {
-      setGeeData(cached.data);
+    const cached = getFreshLocalCacheValue<any>(GEE_ANALYTICS_CACHE_KEY, effectiveField.id, QUERY_CACHE_TTL_MS);
+    if (cached) {
+      setGeeData(cached);
       return;
     }
     const fetchGee = async () => {
@@ -188,11 +181,17 @@ const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProp
           body: { polygon, analyses: ["land_use", "vegetation", "suitability"] },
         });
         if (error) throw error;
-        setGeeData(data);
-        setGeeCache(effectiveField.id, data);
+        if (hasGeeAnalyticsPayload(data)) {
+          setGeeData(data);
+          setLocalCache(GEE_ANALYTICS_CACHE_KEY, effectiveField.id, data);
+        } else if (isFallbackPayload(data)) {
+          setGeeData(cached ?? null);
+        } else {
+          setGeeData(null);
+        }
       } catch (e) {
         console.error("GEE analytics error:", e);
-        setGeeData(null);
+        setGeeData(cached ?? null);
       } finally { setGeeLoading(false); }
     };
     fetchGee();
@@ -201,10 +200,10 @@ const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProp
   // Fetch NDVI time-series
   useEffect(() => {
     if (!effectiveField) { setNdviTimeSeries(null); return; }
-    const tsCache = getGeeCache();
-    const tsCached = tsCache[`ts-${effectiveField.id}`];
-    if (tsCached && Date.now() - tsCached.timestamp < 3600000) {
-      setNdviTimeSeries(tsCached.data);
+    const cacheKey = `ts-${effectiveField.id}`;
+    const cached = getFreshLocalCacheValue<any>(GEE_ANALYTICS_CACHE_KEY, cacheKey, QUERY_CACHE_TTL_MS);
+    if (cached) {
+      setNdviTimeSeries(cached);
       return;
     }
     const fetchTs = async () => {
@@ -215,11 +214,17 @@ const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProp
           body: { polygon },
         });
         if (error) throw error;
-        setNdviTimeSeries(data);
-        setGeeCache(`ts-${effectiveField.id}`, data);
+        if (hasNdviPayload(data)) {
+          setNdviTimeSeries(data);
+          setLocalCache(GEE_ANALYTICS_CACHE_KEY, cacheKey, data);
+        } else if (isFallbackPayload(data)) {
+          setNdviTimeSeries(cached ?? null);
+        } else {
+          setNdviTimeSeries(null);
+        }
       } catch (e) {
         console.error("NDVI time-series error:", e);
-        setNdviTimeSeries(null);
+        setNdviTimeSeries(cached ?? null);
       } finally { setNdviTsLoading(false); }
     };
     fetchTs();
@@ -239,6 +244,10 @@ const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProp
   // Fetch soil data for crop planning
   useEffect(() => {
     if (!effectiveField) { setSoilData(null); return; }
+    const cached = getFreshLocalCacheValue<any>(SOIL_CACHE_KEY, effectiveField.id, QUERY_CACHE_TTL_MS);
+    if (cached) {
+      setSoilData(cached);
+    }
     const fetchSoil = async () => {
       try {
         const { lat, lng } = getFieldCenter(effectiveField);
@@ -246,8 +255,15 @@ const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProp
           body: { lat, lon: lng },
         });
         if (error) throw error;
-        setSoilData(data);
-      } catch (e) { console.error("Soil data for planning error:", e); setSoilData(null); }
+        if (hasSoilPayload(data)) {
+          setSoilData(data);
+          setLocalCache(SOIL_CACHE_KEY, effectiveField.id, data);
+        } else if (isFallbackPayload(data)) {
+          setSoilData(cached ?? null);
+        } else {
+          setSoilData(null);
+        }
+      } catch (e) { console.error("Soil data for planning error:", e); setSoilData(cached ?? null); }
     };
     fetchSoil();
   }, [effectiveField?.id]);
