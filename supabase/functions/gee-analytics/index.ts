@@ -6,6 +6,18 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+function validatePolygon(coords: any): string | null {
+  if (!Array.isArray(coords) || coords.length < 3) return "Polygon must have at least 3 vertices";
+  if (coords.length > 500) return "Polygon exceeds maximum 500 vertices";
+  for (const c of coords) {
+    if (!Array.isArray(c) || c.length < 2) return "Invalid coordinate pair";
+    const [lon, lat] = c;
+    if (typeof lon !== "number" || typeof lat !== "number" || !isFinite(lon) || !isFinite(lat)) return "Coordinates must be finite numbers";
+    if (lon < -180 || lon > 180 || lat < -90 || lat > 90) return "Coordinates out of geographic range";
+  }
+  return null;
+}
+
 // ── GEE Auth ──────────────────────────────────────────────────────
 
 function base64url(data: Uint8Array): string {
@@ -694,6 +706,11 @@ serve(async (req) => {
     } else {
       throw new Error("Invalid polygon");
     }
+    const polyError = validatePolygon(coords);
+    if (polyError) {
+      return new Response(JSON.stringify({ error: polyError }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
 
     const token = await getGeeAccessToken();
     const projectId = Deno.env.get("GEE_PROJECT_ID") || "earthengine-legacy";
@@ -741,7 +758,7 @@ serve(async (req) => {
     });
   } catch (e) {
     console.error("gee-analytics error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
+    return new Response(JSON.stringify({ error: "An internal error occurred while computing analytics" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
