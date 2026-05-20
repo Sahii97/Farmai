@@ -7,6 +7,7 @@ import {
 import { Field, haToAcres } from "@/data/fields";
 import { format } from "date-fns";
 import { supabase } from "@/integrations/supabase/client";
+import { getFreshLocalCacheValue, hasGeeAnalyticsPayload, hasNdviPayload, isFallbackPayload, setLocalCache } from "@/lib/query-cache";
 
 const CHART_GOLD = "#C6B77E";
 const CHART_CREAM = "#F7F4E4";
@@ -65,10 +66,7 @@ function getFieldCenter(field: Field) {
 }
 
 const GEE_ANALYTICS_CACHE_KEY = "gee-analytics-cache";
-
-function getGeeCache(): Record<string, { data: any; timestamp: number }> {
-  try { const c = localStorage.getItem(GEE_ANALYTICS_CACHE_KEY); return c ? JSON.parse(c) : {}; } catch { return {}; }
-}
+const QUERY_CACHE_TTL_MS = 60 * 60 * 1000;
 
 interface FieldComparisonColumnProps {
   field: Field;
@@ -90,10 +88,9 @@ const FieldComparisonColumn = ({ field, startDate, endDate, compact = false, gra
 
   // Fetch GEE analytics
   useEffect(() => {
-    const cache = getGeeCache();
-    const cached = cache[field.id];
-    if (cached && Date.now() - cached.timestamp < 3600000) {
-      setGeeData(cached.data);
+    const cached = getFreshLocalCacheValue<any>(GEE_ANALYTICS_CACHE_KEY, field.id, QUERY_CACHE_TTL_MS);
+    if (cached) {
+      setGeeData(cached);
       return;
     }
     const fetchGee = async () => {
@@ -104,10 +101,17 @@ const FieldComparisonColumn = ({ field, startDate, endDate, compact = false, gra
           body: { polygon, analyses: ["land_use", "vegetation", "suitability"] },
         });
         if (error) throw error;
-        setGeeData(data);
+        if (hasGeeAnalyticsPayload(data)) {
+          setGeeData(data);
+          setLocalCache(GEE_ANALYTICS_CACHE_KEY, field.id, data);
+        } else if (isFallbackPayload(data)) {
+          setGeeData(cached ?? null);
+        } else {
+          setGeeData(null);
+        }
       } catch (e) {
         console.error("GEE analytics error:", e);
-        setGeeData(null);
+        setGeeData(cached ?? null);
       } finally { setGeeLoading(false); }
     };
     fetchGee();
@@ -115,10 +119,10 @@ const FieldComparisonColumn = ({ field, startDate, endDate, compact = false, gra
 
   // Fetch NDVI time-series
   useEffect(() => {
-    const cache = getGeeCache();
-    const cached = cache[`ts-${field.id}`];
-    if (cached && Date.now() - cached.timestamp < 3600000) {
-      setNdviTimeSeries(cached.data);
+    const cacheKey = `ts-${field.id}`;
+    const cached = getFreshLocalCacheValue<any>(GEE_ANALYTICS_CACHE_KEY, cacheKey, QUERY_CACHE_TTL_MS);
+    if (cached) {
+      setNdviTimeSeries(cached);
       return;
     }
     const fetchTs = async () => {
@@ -129,10 +133,17 @@ const FieldComparisonColumn = ({ field, startDate, endDate, compact = false, gra
           body: { polygon },
         });
         if (error) throw error;
-        setNdviTimeSeries(data);
+        if (hasNdviPayload(data)) {
+          setNdviTimeSeries(data);
+          setLocalCache(GEE_ANALYTICS_CACHE_KEY, cacheKey, data);
+        } else if (isFallbackPayload(data)) {
+          setNdviTimeSeries(cached ?? null);
+        } else {
+          setNdviTimeSeries(null);
+        }
       } catch (e) {
         console.error("NDVI time-series error:", e);
-        setNdviTimeSeries(null);
+        setNdviTimeSeries(cached ?? null);
       } finally { setNdviTsLoading(false); }
     };
     fetchTs();
