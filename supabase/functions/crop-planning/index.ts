@@ -19,6 +19,66 @@ function validatePolygon(coords: any): string | null {
   return null;
 }
 const clampStr = (v: unknown) => typeof v === "string" ? v.slice(0, MAX_STR) : "";
+const clampNum = (v: unknown, min = -1e9, max = 1e9): number | null => {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  if (!isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+};
+function sanitizeNdvi(n: any) {
+  if (!n || typeof n !== "object") return null;
+  return {
+    mean_ndvi: clampNum(n.mean_ndvi, -1, 1),
+    min_ndvi: clampNum(n.min_ndvi, -1, 1),
+    max_ndvi: clampNum(n.max_ndvi, -1, 1),
+    vegetation_health_score: clampNum(n.vegetation_health_score, 0, 100),
+  };
+}
+function sanitizeSoil(s: any) {
+  if (!s || typeof s !== "object") return null;
+  const cls = s.classification && typeof s.classification === "object"
+    ? { soil_class: clampStr(s.classification.soil_class) } : null;
+  const tex = s.texture && typeof s.texture === "object" ? {
+    usda_class: clampStr(s.texture.usda_class),
+    sand_pct: clampNum(s.texture.sand_pct, 0, 100),
+    silt_pct: clampNum(s.texture.silt_pct, 0, 100),
+    clay_pct: clampNum(s.texture.clay_pct, 0, 100),
+  } : null;
+  const met = s.metrics && typeof s.metrics === "object" ? {
+    ph: clampNum(s.metrics.ph, 0, 14),
+    soc_g_per_kg: clampNum(s.metrics.soc_g_per_kg, 0, 1000),
+    nitrogen_g_per_kg: clampNum(s.metrics.nitrogen_g_per_kg, 0, 1000),
+    cec: clampNum(s.metrics.cec, 0, 10000),
+  } : null;
+  const wr = s.water_retention && typeof s.water_retention === "object" ? {
+    field_capacity_pct: clampNum(s.water_retention.field_capacity_pct, 0, 100),
+    wilting_point_pct: clampNum(s.water_retention.wilting_point_pct, 0, 100),
+    available_water_pct: clampNum(s.water_retention.available_water_pct, 0, 100),
+  } : null;
+  return { classification: cls, texture: tex, metrics: met, water_retention: wr };
+}
+function sanitizeWeather(w: any) {
+  if (!w || typeof w !== "object") return null;
+  return {
+    temperature: clampNum(w.temperature, -100, 100),
+    humidity: clampNum(w.humidity, 0, 100),
+    windSpeed: clampNum(w.windSpeed, 0, 1000),
+  };
+}
+function sanitizeSuitability(s: any) {
+  if (!s || typeof s !== "object") return null;
+  const raw = s.raw && typeof s.raw === "object" ? {
+    elevation_m: clampNum(s.raw.elevation_m, -500, 10000),
+    slope_deg: clampNum(s.raw.slope_deg, 0, 90),
+    annual_rainfall_mm: clampNum(s.raw.annual_rainfall_mm, 0, 20000),
+  } : null;
+  return {
+    soil_quality: clampNum(s.soil_quality, 0, 100),
+    water_access: clampNum(s.water_access, 0, 100),
+    climate: clampNum(s.climate, 0, 100),
+    topography: clampNum(s.topography, 0, 100),
+    raw,
+  };
+}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -31,6 +91,11 @@ serve(async (req) => {
     fieldName = clampStr(fieldName);
     crop = clampStr(crop);
     location = clampStr(location);
+    area = clampNum(area, 0, 1e7);
+    ndviData = sanitizeNdvi(ndviData);
+    soilData = sanitizeSoil(soilData);
+    weatherData = sanitizeWeather(weatherData);
+    suitabilityData = sanitizeSuitability(suitabilityData);
 
     // Validate coordinates if provided
     const coordRing = coordinates?.[0];
