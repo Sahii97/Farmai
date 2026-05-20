@@ -209,10 +209,13 @@ serve(async (req) => {
     }
 
     const mapData = await mapResp.json();
-    const tileUrl = `https://earthengine.googleapis.com/v1/${mapData.name}/tiles/{z}/{x}/{y}`;
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const tileUrl =
+      `${supabaseUrl}/functions/v1/gee-tile-proxy` +
+      `?name=${encodeURIComponent(mapData.name)}&z={z}&x={x}&y={y}`;
 
     return new Response(
-      JSON.stringify({ tileUrl, token }),
+      JSON.stringify({ tileUrl }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (e) {
