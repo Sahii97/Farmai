@@ -160,10 +160,14 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
     const map = mapRef.current;
     if (!map || !mapLoaded) return;
     allFields.forEach((field) => {
-      try {
-        map.setLayoutProperty(`field-fill-${field.id}`, "visibility", showFields ? "visible" : "none");
-        map.setLayoutProperty(`field-line-${field.id}`, "visibility", showFields ? "visible" : "none");
-      } catch {}
+      const fillLayerId = `field-fill-${field.id}`;
+      const lineLayerId = `field-line-${field.id}`;
+      if (map.getLayer(fillLayerId)) {
+        map.setLayoutProperty(fillLayerId, "visibility", showFields ? "visible" : "none");
+      }
+      if (map.getLayer(lineLayerId)) {
+        map.setLayoutProperty(lineLayerId, "visibility", showFields ? "visible" : "none");
+      }
     });
   }, [showFields, mapLoaded, allFields]);
 
