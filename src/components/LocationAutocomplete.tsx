@@ -6,23 +6,16 @@ interface LocationAutocompleteProps {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  /** @deprecated retained for backwards compatibility; token is no longer required on the client */
   mapToken?: string;
 }
 
-const LocationAutocomplete = ({ value, onChange, placeholder = "Search location…", mapToken: externalToken }: LocationAutocompleteProps) => {
+const LocationAutocomplete = ({ value, onChange, placeholder = "Search location…" }: LocationAutocompleteProps) => {
   const [query, setQuery] = useState(value);
   const [results, setResults] = useState<any[]>([]);
   const [showResults, setShowResults] = useState(false);
-  const [token, setToken] = useState(externalToken || "");
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (externalToken) { setToken(externalToken); return; }
-    supabase.functions.invoke("get-mapbox-token").then(({ data }) => {
-      if (data?.token) setToken(data.token);
-    });
-  }, [externalToken]);
 
   useEffect(() => { setQuery(value); }, [value]);
 
@@ -37,13 +30,12 @@ const LocationAutocomplete = ({ value, onChange, placeholder = "Search location�
   }, []);
 
   const geocode = async (text: string) => {
-    if (!token || text.length < 2) { setResults([]); return; }
+    if (text.length < 2) { setResults([]); return; }
     try {
-      const res = await fetch(
-        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(text)}.json?access_token=${token}&autocomplete=true&limit=4`
-      );
-      const data = await res.json();
-      setResults(data.features || []);
+      const { data } = await supabase.functions.invoke("mapbox-geocode", {
+        body: { mode: "forward", query: text, limit: 4 },
+      });
+      setResults(data?.features || []);
       setShowResults(true);
     } catch {
       setResults([]);
