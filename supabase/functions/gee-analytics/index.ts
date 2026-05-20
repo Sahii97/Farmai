@@ -481,9 +481,11 @@ async function computeVegetationIndices(token: string, projectId: string, coords
     },
   };
 
-  const ndviMean = await computeValue(token, projectId, reduceRegion(ndviClipped, geometry, "Reducer.mean"));
-  const eviMean = await computeValue(token, projectId, reduceRegion(eviClipped, geometry, "Reducer.mean"));
-  const canopyMean = await computeValue(token, projectId, reduceRegion(ndviGt, geometry, "Reducer.mean"));
+  const [ndviMean, eviMean, canopyMean] = await Promise.all([
+    computeValue(token, projectId, reduceRegion(ndviClipped, geometry, "Reducer.mean")),
+    computeValue(token, projectId, reduceRegion(eviClipped, geometry, "Reducer.mean")),
+    computeValue(token, projectId, reduceRegion(ndviGt, geometry, "Reducer.mean")),
+  ]);
 
   console.log("Vegetation indices:", JSON.stringify({ ndviMean, eviMean, canopyMean }));
 
@@ -600,10 +602,12 @@ async function computeLandSuitability(token: string, projectId: string, coords: 
     },
   };
 
-  const elevResult = await computeValue(token, projectId, reduceRegion(srtmClipped, geometry, "Reducer.mean", 30));
-  const slopeResult = await computeValue(token, projectId, reduceRegion(slope, geometry, "Reducer.mean", 30));
-  const rainfallResult = await computeValue(token, projectId, reduceRegion(rainfallClipped, geometry, "Reducer.mean", 5000));
-  const soilResult = await computeValue(token, projectId, reduceRegion(soilOCSurface, geometry, "Reducer.mean", 250));
+  const [elevResult, slopeResult, rainfallResult, soilResult] = await Promise.all([
+    computeValue(token, projectId, reduceRegion(srtmClipped, geometry, "Reducer.mean", 30)),
+    computeValue(token, projectId, reduceRegion(slope, geometry, "Reducer.mean", 30)),
+    computeValue(token, projectId, reduceRegion(rainfallClipped, geometry, "Reducer.mean", 5000)),
+    computeValue(token, projectId, reduceRegion(soilOCSurface, geometry, "Reducer.mean", 250)),
+  ]);
 
   console.log("Suitability raw:", JSON.stringify({ elevResult, slopeResult, rainfallResult, soilResult }));
 
@@ -801,38 +805,38 @@ serve(async (req) => {
 
     const results: Record<string, any> = {};
 
+    // Run all requested analyses in parallel instead of sequentially.
+    // Sequential execution stacked GEE latency per analysis — this was the main slowdown.
+    const tasks: Promise<void>[] = [];
     if (requested.includes("land_use")) {
-      try {
-        results.land_use = await computeLandUse(token, projectId, coords);
-      } catch (e) {
-        console.error("Land use error:", e);
-        results.land_use = null;
-      }
+      tasks.push(
+        computeLandUse(token, projectId, coords)
+          .then((v) => { results.land_use = v; })
+          .catch((e) => { console.error("Land use error:", e); results.land_use = null; })
+      );
     }
     if (requested.includes("vegetation")) {
-      try {
-        results.vegetation = await computeVegetationIndices(token, projectId, coords);
-      } catch (e) {
-        console.error("Vegetation error:", e);
-        results.vegetation = null;
-      }
+      tasks.push(
+        computeVegetationIndices(token, projectId, coords)
+          .then((v) => { results.vegetation = v; })
+          .catch((e) => { console.error("Vegetation error:", e); results.vegetation = null; })
+      );
     }
     if (requested.includes("suitability")) {
-      try {
-        results.suitability = await computeLandSuitability(token, projectId, coords);
-      } catch (e) {
-        console.error("Suitability error:", e);
-        results.suitability = null;
-      }
+      tasks.push(
+        computeLandSuitability(token, projectId, coords)
+          .then((v) => { results.suitability = v; })
+          .catch((e) => { console.error("Suitability error:", e); results.suitability = null; })
+      );
     }
     if (requested.includes("growth_stage")) {
-      try {
-        results.growth_stage = await computeGrowthStage(token, projectId, coords);
-      } catch (e) {
-        console.error("Growth stage error:", e);
-        results.growth_stage = null;
-      }
+      tasks.push(
+        computeGrowthStage(token, projectId, coords)
+          .then((v) => { results.growth_stage = v; })
+          .catch((e) => { console.error("Growth stage error:", e); results.growth_stage = null; })
+      );
     }
+    await Promise.all(tasks);
 
     const hasUsefulData = Object.values(results).some((value) => value !== null);
     if (hasUsefulData) {
