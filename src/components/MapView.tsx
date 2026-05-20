@@ -25,7 +25,7 @@ function saveMapPosition(map: mapboxgl.Map) {
 
 function loadMapPosition() {
   try { const s = localStorage.getItem(MAP_POS_KEY); if (s) return JSON.parse(s); } catch {}
-  return { lng: 0.722, lat: 40.719, zoom: 13, bearing: 0, pitch: 0 };
+  return { lng: 44.3661, lat: 33.3152, zoom: 6, bearing: 0, pitch: 0 };
 }
 
 function hideExtraLabels(map: mapboxgl.Map) {
@@ -410,7 +410,7 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
   const loadGeeNdviTiles = async () => {
     const maxAttempts = 4;
     let lastErr: any = null;
-    toast.info("Loading NDVI overlay…");
+    toast.info("جاري تحميل صحة النبات...");
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         const { data, error } = await supabase.functions.invoke("gee-ndvi-tiles");
@@ -422,7 +422,7 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
             try { if (map.getSource("gee-ndvi-source")) map.removeSource("gee-ndvi-source"); } catch {}
           }
           setGeeNdviTileUrl(data.tileUrl);
-          toast.success("NDVI layer loaded");
+          toast.success("تم تحميل صحة النبات");
           return;
         }
         if (data?.error) throw new Error(data.error);
@@ -435,13 +435,13 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
       }
     }
     console.error("NDVI tiles error:", lastErr);
-    toast.error("Failed to load NDVI tiles: " + (lastErr?.message || "Unknown error"));
+    toast.error("تعذر تحميل صحة النبات: " + (lastErr?.message || "خطأ غير معروف"));
     setShowNdvi(false);
   };
 
   return (
     <div className="relative w-full h-full">
-      {!mapToken && <div className="absolute inset-0 flex items-center justify-center bg-background z-10"><div className="text-muted-foreground text-sm animate-pulse">Loading map…</div></div>}
+      {!mapToken && <div className="absolute inset-0 flex items-center justify-center bg-background z-10" dir="rtl"><div className="text-muted-foreground text-sm animate-pulse">جاري تحميل الخريطة...</div></div>}
       <div ref={mapContainer} className="w-full h-full" />
       <SearchBar onSearch={() => {}} mapToken={mapToken} onLocationSelect={handleLocationSelect} />
       <MapToolbar onZoomIn={() => mapRef.current?.zoomIn()} onZoomOut={() => mapRef.current?.zoomOut()} onStyleChange={handleStyleChange}
@@ -460,25 +460,25 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
       )}
 
       {drawMode && !isMobile && (
-        <div className="absolute bottom-6 left-4 z-10 bg-card/90 backdrop-blur-sm rounded-lg border border-border px-4 py-2.5 text-xs text-foreground space-y-1">
+        <div className="absolute bottom-6 right-4 z-10 bg-card/90 backdrop-blur-sm rounded-lg border border-border px-4 py-2.5 text-xs text-foreground space-y-1" dir="rtl">
           <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: "#56B6C2" }} />
-            <span className="font-medium">Drawing Mode</span>
+            <span className="w-2 h-2 rounded-full animate-pulse bg-primary" />
+            <span className="font-medium">تحديد الأرض</span>
           </div>
-          <div className="text-muted-foreground">Click to add boundary points · <kbd className="px-1 py-0.5 rounded bg-muted text-[10px]">Backspace</kbd> to undo</div>
-          <div className="text-muted-foreground"><kbd className="px-1 py-0.5 rounded bg-muted text-[10px]">Enter</kbd> to save · <kbd className="px-1 py-0.5 rounded bg-muted text-[10px]">Esc</kbd> to exit</div>
+          <div className="text-muted-foreground">اضغط على الخريطة لإضافة نقاط الحدود</div>
+          <div className="text-muted-foreground"><kbd className="px-1 py-0.5 rounded bg-muted text-[10px]">Enter</kbd> للحفظ · <kbd className="px-1 py-0.5 rounded bg-muted text-[10px]">Esc</kbd> للخروج</div>
         </div>
       )}
 
       {editBoundaryFieldId && (
-        <div className={`absolute ${isMobile ? 'bottom-20' : 'bottom-6'} left-4 z-10 bg-card/90 backdrop-blur-sm rounded-lg border border-border px-4 py-2.5 text-xs text-foreground space-y-1`}>
+        <div className={`absolute ${isMobile ? 'bottom-20' : 'bottom-6'} right-4 z-10 bg-card/90 backdrop-blur-sm rounded-lg border border-border px-4 py-2.5 text-xs text-foreground space-y-1`} dir="rtl">
           <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: "#56B6C2" }} />
-            <span className="font-medium">Editing Boundary</span>
+            <span className="w-2 h-2 rounded-full animate-pulse bg-primary" />
+            <span className="font-medium">تعديل الحدود</span>
           </div>
-          <div className="text-muted-foreground">Drag vertices to reshape</div>
-          <div className="text-muted-foreground">Enter or Esc to finish</div>
-          <button onClick={onCancelEditBoundary} className="mt-1 px-3 py-1 rounded-md bg-primary text-primary-foreground text-xs">Done</button>
+          <div className="text-muted-foreground">اسحب النقاط لتعديل شكل الأرض</div>
+          <div className="text-muted-foreground">Enter أو Esc للإنهاء</div>
+          <button onClick={onCancelEditBoundary} className="mt-1 px-3 py-1 rounded-md bg-primary text-primary-foreground text-xs">تم</button>
         </div>
       )}
 

@@ -35,7 +35,7 @@ function loadSelectedIds(allFields: Field[]): string[] {
 
 const Index = () => {
   const isMobile = useIsMobile();
-  const [view, setView] = useState<"map" | "analytics">("map");
+  const [view, setView] = useState<"map" | "advice">("map");
   const [allFields, setAllFields] = useState<Field[]>(loadAllFields);
   const [selectedIds, setSelectedIds] = useState<string[]>(() => loadSelectedIds(loadAllFields()));
   const [activeField, setActiveField] = useState<Field | null>(null);
@@ -43,7 +43,7 @@ const Index = () => {
   const [flyToField, setFlyToField] = useState<Field | null>(null);
   const [editBoundaryFieldId, setEditBoundaryFieldId] = useState<string | null>(null);
   // Mobile-specific state
-  const [mobileTab, setMobileTab] = useState<"map" | "fields" | "analytics" | "detail">("map");
+  const [mobileTab, setMobileTab] = useState<"map" | "fields" | "advice" | "detail">("map");
 
   const selectedFields = allFields.filter(f => selectedIds.includes(f.id));
 
@@ -77,7 +77,7 @@ const Index = () => {
     if (isMobile) setMobileTab("map");
   }, [isMobile]);
 
-  const tabOrder: ("map" | "fields" | "analytics")[] = ["map", "fields", "analytics"];
+  const tabOrder: ("map" | "fields" | "advice")[] = ["map", "fields", "advice"];
   const swipeHandlers = useSwipe({
     onSwipeLeft: () => {
       if (mobileTab === "detail") return;
@@ -116,7 +116,7 @@ const Index = () => {
           />
         )}
 
-        {mobileTab === "analytics" && (
+        {mobileTab === "advice" && (
           <div className="absolute inset-0 z-30 bg-background overflow-y-auto pb-20">
             <WeatherView activeField={activeField} selectedFields={selectedFields} allFields={allFields} />
           </div>
@@ -136,34 +136,32 @@ const Index = () => {
         <MobileBottomNav activeTab={mobileTab === "detail" ? "fields" : mobileTab} onTabChange={(tab) => {
           if (tab === "map") { setMobileTab("map"); }
           else if (tab === "fields") { setMobileTab("fields"); }
-          else if (tab === "analytics") { setMobileTab("analytics"); }
+          else if (tab === "advice") { setMobileTab("advice"); }
         }} />
       </div>
     );
   }
 
-  // DESKTOP LAYOUT (unchanged)
   return (
-    <div className="h-screen w-screen bg-surface-outer flex items-center justify-center p-6">
-      <div className="w-full h-full max-w-[1400px] max-h-[900px] rounded-2xl overflow-hidden bg-background shadow-2xl relative border-[#041009] border-2">
-        {/* View toggle */}
-        <div className="absolute top-4 z-20 flex gap-1 bg-card/80 backdrop-blur-sm rounded-lg border border-border p-1" style={{ left: "calc(50% - 15px)", transform: "translateX(-50%)" }}>
-          {(["map", "analytics"] as const).map((v) => (
+    <div className="h-screen w-screen bg-surface-outer flex items-center justify-center p-4">
+      <div className="w-full h-full max-w-[1420px] max-h-[920px] rounded-xl overflow-hidden bg-background shadow-2xl relative border border-green-950/80">
+        <div className="absolute top-4 z-20 flex gap-1 bg-card/85 backdrop-blur-sm rounded-lg border border-border p-1" style={{ left: "50%", transform: "translateX(-50%)" }}>
+          {(["map", "advice"] as const).map((v) => (
             <button key={v} onClick={() => setView(v)}
               className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-300 ${view === v ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
-              {v === "map" ? "Map" : "Analytics"}
+              {v === "map" ? "الخريطة" : "النصيحة"}
             </button>
           ))}
         </div>
 
-        <div className="flex w-full h-full">
+        <div className="flex w-full h-full" dir="ltr">
           <div className="flex-1 relative">
             <div className="absolute inset-0 transition-opacity duration-200" style={{ opacity: view === "map" ? 1 : 0, pointerEvents: view === "map" ? "auto" : "none" }}>
               <MapView allFields={allFields} selectedFields={selectedFields} activeField={activeField} flyToField={flyToField}
                 onFlyToDone={() => setFlyToField(null)} onFieldClickOnMap={(field) => { setActiveField(field); setDetailField(field); }}
                 onAddField={handleAddField} editBoundaryFieldId={editBoundaryFieldId} onUpdateField={handleUpdateField} onCancelEditBoundary={() => setEditBoundaryFieldId(null)} />
             </div>
-            <div className="absolute inset-0 transition-opacity duration-200" style={{ opacity: view === "analytics" ? 1 : 0, pointerEvents: view === "analytics" ? "auto" : "none" }}>
+            <div className="absolute inset-0 transition-opacity duration-200" style={{ opacity: view === "advice" ? 1 : 0, pointerEvents: view === "advice" ? "auto" : "none" }}>
               <WeatherView activeField={activeField} selectedFields={selectedFields} allFields={allFields} />
             </div>
           </div>
