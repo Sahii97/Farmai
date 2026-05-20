@@ -1,4 +1,4 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -108,15 +108,46 @@ serve(async (req) => {
     const propsUrl = `${SOILGRIDS_BASE}/properties/query?lon=${lon}&lat=${lat}&${propParams}&${depthParams}&value=mean`;
     const classUrl = `${SOILGRIDS_BASE}/classification/query?lon=${lon}&lat=${lat}&number_classes=3`;
 
+    async function fetchWithRetry(url: string): Promise<Response> {
+      const delays = [500, 1500];
+      let last: Response | null = null;
+      for (let i = 0; i <= delays.length; i++) {
+        try {
+          const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+          if (r.ok) return r;
+          last = r;
+          if (r.status >= 500 && i < delays.length) {
+            await new Promise((res) => setTimeout(res, delays[i] + Math.floor(Math.random() * 250)));
+            continue;
+          }
+          return r;
+        } catch (err) {
+          console.error("SoilGrids fetch failed:", (err as Error)?.message);
+          if (i < delays.length) {
+            await new Promise((res) => setTimeout(res, delays[i]));
+            continue;
+          }
+          // Synthesize a 503 so caller's fallback path triggers.
+          return new Response("upstream timeout", { status: 503 });
+        }
+      }
+      return last as Response;
+    }
+
     const [propsRes, classRes] = await Promise.all([
-      fetch(propsUrl),
-      fetch(classUrl),
+      fetchWithRetry(propsUrl),
+      fetchWithRetry(classUrl),
     ]);
 
     if (!propsRes.ok) {
-      const t = await propsRes.text();
+      const t = await propsRes.text().catch(() => "");
       console.error("SoilGrids properties error:", propsRes.status, t);
-      throw new Error(`SoilGrids unavailable (${propsRes.status})`);
+      // Return graceful fallback (HTTP 200) so the client UI keeps working.
+      return new Response(JSON.stringify({
+        error: propsRes.status >= 500 ? "SERVICE_UNAVAILABLE" : `SoilGrids error (${propsRes.status})`,
+        fallback: true,
+        message: "Soil data service (ISRIC SoilGrids) is temporarily unavailable. Please try again later.",
+      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     const propsData = await propsRes.json();
@@ -214,8 +245,13 @@ serve(async (req) => {
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     console.error("soil-data error:", e);
-    return new Response(JSON.stringify({ error: "An internal error occurred while fetching soil data" }), {
-      status: 500,
+    // Always return 200 fallback so the client UI stays functional.
+    return new Response(JSON.stringify({
+      error: "SERVICE_UNAVAILABLE",
+      fallback: true,
+      message: "Soil data service is temporarily unavailable. Please try again later.",
+    }), {
+      status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
