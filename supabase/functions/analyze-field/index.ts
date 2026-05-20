@@ -1,4 +1,4 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -171,22 +171,40 @@ serve(async (req) => {
 
       async function computeValue(expr: any): Promise<any> {
         const flat = flattenExpression(expr);
-        const resp = await fetch(`https://earthengine.googleapis.com/v1/projects/${projectId}/value:compute`, {
+        const url = `https://earthengine.googleapis.com/v1/projects/${projectId}/value:compute`;
+        const init = {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({ expression: flat }),
-        });
-        if (!resp.ok) { const t = await resp.text(); throw new Error(`GEE compute failed (${resp.status}): ${t}`); }
-        return resp.json();
+        };
+        const delays = [500, 1500, 4000];
+        let lastErr = "";
+        for (let attempt = 0; attempt <= delays.length; attempt++) {
+          const resp = await fetch(url, init);
+          if (resp.ok) return resp.json();
+          lastErr = await resp.text();
+          // Retry on rate limit or transient server errors
+          if ((resp.status === 429 || resp.status >= 500) && attempt < delays.length) {
+            const jitter = Math.floor(Math.random() * 300);
+            await new Promise((r) => setTimeout(r, delays[attempt] + jitter));
+            continue;
+          }
+          if (resp.status === 429 || lastErr.includes("RESOURCE_EXHAUSTED")) {
+            throw new Error(`GEE_RATE_LIMITED: ${lastErr}`);
+          }
+          throw new Error(`GEE compute failed (${resp.status}): ${lastErr}`);
+        }
+        if (lastErr.includes("RESOURCE_EXHAUSTED")) {
+          throw new Error(`GEE_RATE_LIMITED: ${lastErr}`);
+        }
+        throw new Error(`GEE compute failed after retries: ${lastErr}`);
       }
 
       async function tryComputeNdvi(start: string, end: string) {
         const { clipped, geometry } = buildNdviImage(coords, start, end);
-        const [meanResult, minResult, maxResult] = await Promise.all([
-          computeValue(buildReduceRegion(clipped, geometry, "Reducer.mean")),
-          computeValue(buildReduceRegion(clipped, geometry, "Reducer.min")),
-          computeValue(buildReduceRegion(clipped, geometry, "Reducer.max")),
-        ]);
+        const meanResult = await computeValue(buildReduceRegion(clipped, geometry, "Reducer.mean"));
+        const minResult = await computeValue(buildReduceRegion(clipped, geometry, "Reducer.min"));
+        const maxResult = await computeValue(buildReduceRegion(clipped, geometry, "Reducer.max"));
         return {
           meanNdvi: meanResult?.result?.nd ?? null,
           minNdvi: minResult?.result?.nd ?? null,
@@ -380,8 +398,25 @@ Based on the soil data (${soilData?.texture || "unknown"} texture, pH ${soilData
     return new Response(JSON.stringify({ analysis }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     console.error("analyze-field error:", e);
-    return new Response(JSON.stringify({ error: "An internal error occurred while analyzing the field" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    const msg = e instanceof Error ? e.message : String(e);
+    if (
+      msg.includes("GEE_RATE_LIMITED") ||
+      msg.includes("RESOURCE_EXHAUSTED") ||
+      msg.includes("GEE compute failed (429)") ||
+      msg.includes("after retries")
+    ) {
+      return new Response(JSON.stringify({
+        error: "RATE_LIMITED",
+        fallback: true,
+        message: "Satellite analysis service is temporarily busy. Please try again in a moment.",
+      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({
+      error: "SERVICE_UNAVAILABLE",
+      fallback: true,
+      message: "Field analysis is temporarily unavailable. Please retry shortly.",
+    }), {
+      status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
