@@ -6,14 +6,41 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+const MAX_STR = 200;
+function validatePolygon(coords: any): string | null {
+  if (!Array.isArray(coords) || coords.length < 3) return "Polygon must have at least 3 vertices";
+  if (coords.length > 500) return "Polygon exceeds maximum 500 vertices";
+  for (const c of coords) {
+    if (!Array.isArray(c) || c.length < 2) return "Invalid coordinate pair";
+    const [lon, lat] = c;
+    if (typeof lon !== "number" || typeof lat !== "number" || !isFinite(lon) || !isFinite(lat)) return "Coordinates must be finite numbers";
+    if (lon < -180 || lon > 180 || lat < -90 || lat > 90) return "Coordinates out of geographic range";
+  }
+  return null;
+}
+const clampStr = (v: unknown) => typeof v === "string" ? v.slice(0, MAX_STR) : "";
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const {
+    let {
       fieldName, crop, area, location, coordinates,
       ndviData, soilData, weatherData, suitabilityData,
     } = await req.json();
+    fieldName = clampStr(fieldName);
+    crop = clampStr(crop);
+    location = clampStr(location);
+
+    // Validate coordinates if provided
+    const coordRing = coordinates?.[0];
+    if (coordRing) {
+      const polyError = validatePolygon(coordRing);
+      if (polyError) {
+        return new Response(JSON.stringify({ error: polyError }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
@@ -152,7 +179,7 @@ RULES:
     });
   } catch (e) {
     console.error("crop-planning error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
+    return new Response(JSON.stringify({ error: "An internal error occurred while generating the plan" }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
