@@ -1,8 +1,10 @@
 import { Search, MapPin } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
 
 interface SearchBarProps {
   onSearch: (query: string) => void;
+  /** @deprecated no longer required; geocoding goes through the mapbox-geocode edge function */
   mapToken?: string;
   onLocationSelect?: (lng: number, lat: number, name: string) => void;
 }
@@ -13,7 +15,7 @@ interface GeocodingResult {
   center: [number, number];
 }
 
-const SearchBar = ({ onSearch, mapToken, onLocationSelect }: SearchBarProps) => {
+const SearchBar = ({ onSearch, onLocationSelect }: SearchBarProps) => {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GeocodingResult[]>([]);
   const [showResults, setShowResults] = useState(false);
@@ -31,16 +33,15 @@ const SearchBar = ({ onSearch, mapToken, onLocationSelect }: SearchBarProps) => 
   }, []);
 
   const geocode = async (text: string) => {
-    if (!mapToken || text.length < 2) {
+    if (text.length < 2) {
       setResults([]);
       return;
     }
     try {
-      const res = await fetch(
-        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(text)}.json?access_token=${mapToken}&autocomplete=true&limit=4`
-      );
-      const data = await res.json();
-      setResults((data.features || []).slice(0, 4));
+      const { data } = await supabase.functions.invoke("mapbox-geocode", {
+        body: { mode: "forward", query: text, limit: 4 },
+      });
+      setResults(((data?.features as GeocodingResult[]) || []).slice(0, 4));
       setShowResults(true);
     } catch {
       setResults([]);
