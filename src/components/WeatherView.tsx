@@ -13,6 +13,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { supabase } from "@/integrations/supabase/client";
 import { getFreshLocalCacheValue, hasGeeAnalyticsPayload, hasNdviPayload, hasSoilPayload, isFallbackPayload, setLocalCache } from "@/lib/query-cache";
+import { invokeWithRetry } from "@/lib/invoke-with-retry";
 
 const CHART_GOLD = "#C6B77E";
 const CHART_CREAM = "#F7F4E4";
@@ -177,17 +178,16 @@ const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProp
       setGeeLoading(true);
       try {
         const polygon = effectiveField.coordinates[0];
-        const { data, error } = await supabase.functions.invoke("gee-analytics", {
-          body: { polygon, analyses: ["land_use", "vegetation", "suitability"] },
-        });
-        if (error) throw error;
+        const data = await invokeWithRetry<any>(
+          "gee-analytics",
+          { polygon, analyses: ["land_use", "vegetation", "suitability"] },
+          { retries: 4, isEmpty: (d) => !hasGeeAnalyticsPayload(d) }
+        );
         if (hasGeeAnalyticsPayload(data)) {
           setGeeData(data);
           setLocalCache(GEE_ANALYTICS_CACHE_KEY, effectiveField.id, data);
-        } else if (isFallbackPayload(data)) {
-          setGeeData(cached ?? null);
         } else {
-          setGeeData(null);
+          setGeeData(cached ?? null);
         }
       } catch (e) {
         console.error("GEE analytics error:", e);
@@ -210,17 +210,16 @@ const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProp
       setNdviTsLoading(true);
       try {
         const polygon = effectiveField.coordinates[0];
-        const { data, error } = await supabase.functions.invoke("ndvi-timeseries", {
-          body: { polygon },
-        });
-        if (error) throw error;
+        const data = await invokeWithRetry<any>(
+          "ndvi-timeseries",
+          { polygon },
+          { retries: 4, isEmpty: (d) => !hasNdviPayload(d) }
+        );
         if (hasNdviPayload(data)) {
           setNdviTimeSeries(data);
           setLocalCache(GEE_ANALYTICS_CACHE_KEY, cacheKey, data);
-        } else if (isFallbackPayload(data)) {
-          setNdviTimeSeries(cached ?? null);
         } else {
-          setNdviTimeSeries(null);
+          setNdviTimeSeries(cached ?? null);
         }
       } catch (e) {
         console.error("NDVI time-series error:", e);
@@ -251,17 +250,16 @@ const WeatherView = ({ activeField, selectedFields, allFields }: WeatherViewProp
     const fetchSoil = async () => {
       try {
         const { lat, lng } = getFieldCenter(effectiveField);
-        const { data, error } = await supabase.functions.invoke("soil-data", {
-          body: { lat, lon: lng },
-        });
-        if (error) throw error;
+        const data = await invokeWithRetry<any>(
+          "soil-data",
+          { lat, lon: lng },
+          { retries: 3, isEmpty: (d) => !hasSoilPayload(d) }
+        );
         if (hasSoilPayload(data)) {
           setSoilData(data);
           setLocalCache(SOIL_CACHE_KEY, effectiveField.id, data);
-        } else if (isFallbackPayload(data)) {
-          setSoilData(cached ?? null);
         } else {
-          setSoilData(null);
+          setSoilData(cached ?? null);
         }
       } catch (e) { console.error("Soil data for planning error:", e); setSoilData(cached ?? null); }
     };
