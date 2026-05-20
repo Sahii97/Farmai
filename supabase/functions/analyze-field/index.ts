@@ -22,6 +22,36 @@ function clampStr(v: unknown): string {
   if (typeof v !== "string") return "";
   return v.slice(0, MAX_STR);
 }
+function clampNum(v: unknown, min = -1e9, max = 1e9): number | null {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  if (!isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+}
+function sanitizeSoil(s: any) {
+  if (!s || typeof s !== "object") return null;
+  const wr = s.waterRetention && typeof s.waterRetention === "object" ? {
+    field_capacity_pct: clampNum(s.waterRetention.field_capacity_pct, 0, 100),
+    wilting_point_pct: clampNum(s.waterRetention.wilting_point_pct, 0, 100),
+    available_water_pct: clampNum(s.waterRetention.available_water_pct, 0, 100),
+  } : null;
+  return {
+    type: clampStr(s.type),
+    texture: clampStr(s.texture),
+    ph: clampNum(s.ph, 0, 14),
+    soc: clampNum(s.soc, 0, 1000),
+    nitrogen: clampNum(s.nitrogen, 0, 1000),
+    cec: clampNum(s.cec, 0, 10000),
+    waterRetention: wr,
+  };
+}
+function sanitizeAqi(a: any) {
+  if (!a || typeof a !== "object") return null;
+  return {
+    pm2_5: clampNum(a.pm2_5, 0, 100000),
+    pm10: clampNum(a.pm10, 0, 100000),
+    aqi: clampNum(a.aqi, 0, 100000),
+  };
+}
 
 // ── GEE Auth ──────────────────────────────────────────────────────
 
@@ -198,6 +228,15 @@ serve(async (req) => {
     fieldName = clampStr(fieldName);
     crop = clampStr(crop);
     location = clampStr(location);
+    area = clampNum(area, 0, 1e7);
+    temperature = clampNum(temperature, -100, 100);
+    humidity = clampNum(humidity, 0, 100);
+    windSpeed = clampNum(windSpeed, 0, 1000);
+    soilMoisture = clampNum(soilMoisture, 0, 100);
+    ndviEstimate = clampNum(ndviEstimate, -1, 1);
+    isUrban = !!isUrban;
+    soilData = sanitizeSoil(soilData);
+    aqiData = sanitizeAqi(aqiData);
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
