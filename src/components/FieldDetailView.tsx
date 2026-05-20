@@ -12,6 +12,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
 } from "recharts";
 import { getFreshLocalCacheValue, hasNdviPayload, hasSoilPayload, isFallbackPayload, setLocalCache } from "@/lib/query-cache";
+import { invokeWithRetry } from "@/lib/invoke-with-retry";
 
 const URBAN_CROPS = ["Residential", "Commercial", "Park / Garden", "Industrial", "Mixed Use", "Rooftop / Terrace", "Community Garden"];
 
@@ -150,8 +151,11 @@ function GrowthStageSection({ polygon, fieldId }: { polygon: [number, number][];
     const fetchGrowthStage = async () => {
       setLoading(true);
       try {
-        const { data: result, error } = await supabase.functions.invoke("ndvi-timeseries", { body: { polygon } });
-        if (error) throw error;
+        const result = await invokeWithRetry<any>(
+          "ndvi-timeseries",
+          { polygon },
+          { retries: 3, isEmpty: (d: any) => !d?.growth_stage }
+        );
         const gs = result?.growth_stage ? {
           stage: result.growth_stage, progress: result.growth_progress,
           current_ndvi: result.latest_ndvi, date_range: result.date_range,
@@ -264,17 +268,16 @@ const FieldDetailView = ({ field, onBack, onEditBoundary }: FieldDetailViewProps
     const fetchSoil = async () => {
       setSoilLoading(true);
       try {
-        const { data, error } = await supabase.functions.invoke("soil-data", {
-          body: { lat: fieldCenter.lat, lon: fieldCenter.lng },
-        });
-        if (error) throw error;
+        const data = await invokeWithRetry<any>(
+          "soil-data",
+          { lat: fieldCenter.lat, lon: fieldCenter.lng },
+          { retries: 3, isEmpty: (d) => !hasSoilPayload(d) }
+        );
         if (hasSoilPayload(data)) {
           setSoilData(data);
           setLocalCache(SOIL_CACHE_KEY, field.id, data);
-        } else if (isFallbackPayload(data)) {
-          setSoilData(cached ?? null);
         } else {
-          setSoilData(null);
+          setSoilData(cached ?? null);
         }
       } catch (e) { console.error("Soil data error:", e); setSoilData(cached ?? null); }
       finally { setSoilLoading(false); }
@@ -292,12 +295,15 @@ const FieldDetailView = ({ field, onBack, onEditBoundary }: FieldDetailViewProps
   const fetchNdviStats = async () => {
     setNdviLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("analyze-field", { body: { polygon: field.coordinates[0] } });
-      if (error) throw error;
+      const data = await invokeWithRetry<any>(
+        "analyze-field",
+        { polygon: field.coordinates[0] },
+        { retries: 4, isEmpty: (d: any) => !hasNdviPayload(d) || d?.mean_ndvi === undefined }
+      );
       if (hasNdviPayload(data) && data?.mean_ndvi !== undefined) {
         setNdviStats(data);
         setLocalCache(NDVI_CACHE_KEY, field.id, data);
-      } else if (isFallbackPayload(data)) {
+      } else {
         const cached = getFreshLocalCacheValue<NdviStats>(NDVI_CACHE_KEY, field.id, QUERY_CACHE_TTL_MS);
         setNdviStats(cached);
       }
