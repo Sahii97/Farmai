@@ -1,10 +1,40 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
+
+const GEE_RETRY_DELAYS_MS = [800, 1800, 4000];
+const TOKEN_REFRESH_SKEW_MS = 60_000;
+const ANALYTICS_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+let cachedToken: { token: string; expiresAt: number } | null = null;
+const analyticsCache = new Map<string, { data: Record<string, any>; expiresAt: number }>();
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildAnalyticsCacheKey(coords: [number, number][], analyses: string[]) {
+  const normalizedCoords = coords.map(([lon, lat]) => [Number(lon.toFixed(5)), Number(lat.toFixed(5))]);
+  return JSON.stringify({ coords: normalizedCoords, analyses: [...analyses].sort() });
+}
+
+function getCachedAnalytics(key: string, allowStale = false) {
+  const cached = analyticsCache.get(key);
+  if (!cached) return null;
+  if (!allowStale && cached.expiresAt < Date.now()) return null;
+  return cached.data;
+}
+
+function setCachedAnalytics(key: string, data: Record<string, any>) {
+  analyticsCache.set(key, {
+    data,
+    expiresAt: Date.now() + ANALYTICS_CACHE_TTL_MS,
+  });
+}
 
 function validatePolygon(coords: any): string | null {
   if (!Array.isArray(coords) || coords.length < 3) return "Polygon must have at least 3 vertices";
@@ -43,6 +73,9 @@ async function createJwt(email: string, privateKeyPem: string, scopes: string[])
 }
 
 async function getGeeAccessToken(): Promise<string> {
+  if (cachedToken && cachedToken.expiresAt > Date.now() + TOKEN_REFRESH_SKEW_MS) {
+    return cachedToken.token;
+  }
   const raw = Deno.env.get("GEE_SERVICE_ACCOUNT_JSON");
   if (!raw) throw new Error("GEE_SERVICE_ACCOUNT_JSON secret not configured");
   const sa = JSON.parse(raw);
@@ -53,7 +86,12 @@ async function getGeeAccessToken(): Promise<string> {
     body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`,
   });
   if (!resp.ok) { const t = await resp.text(); throw new Error(`OAuth failed: ${t}`); }
-  return (await resp.json()).access_token;
+  const json = await resp.json();
+  cachedToken = {
+    token: json.access_token,
+    expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000,
+  };
+  return cachedToken.token;
 }
 
 // ── Expression helpers ───────────────────────────────────────────
@@ -85,20 +123,60 @@ function flattenExpression(nested: any): { values: Record<string, any>; result: 
 
 async function computeValue(token: string, projectId: string, expr: any): Promise<any> {
   const flat = flattenExpression(expr);
-  const resp = await fetch(
-    `https://earthengine.googleapis.com/v1/projects/${projectId}/value:compute`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ expression: flat }),
+  let lastError = "";
+  for (let attempt = 0; attempt <= GEE_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const resp = await fetch(
+        `https://earthengine.googleapis.com/v1/projects/${projectId}/value:compute`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ expression: flat }),
+          signal: AbortSignal.timeout(15_000),
+        }
+      );
+
+      if (resp.ok) {
+        return resp.json();
+      }
+
+      lastError = await resp.text();
+      const retryable = resp.status === 429 || resp.status >= 500 || lastError.includes("RESOURCE_EXHAUSTED");
+      if (retryable && attempt < GEE_RETRY_DELAYS_MS.length) {
+        await sleep(GEE_RETRY_DELAYS_MS[attempt] + Math.floor(Math.random() * 300));
+        continue;
+      }
+
+      if (retryable) {
+        throw new Error(`GEE_RATE_LIMITED: ${lastError}`);
+      }
+
+      console.error("GEE value:compute error:", resp.status, lastError);
+      throw new Error(`GEE compute failed (${resp.status}): ${lastError}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const retryable =
+        message.includes("GEE_RATE_LIMITED") ||
+        message.includes("AbortError") ||
+        message.includes("TimeoutError") ||
+        message.includes("timed out") ||
+        message.includes("fetch") ||
+        message.includes("network");
+
+      if (retryable && attempt < GEE_RETRY_DELAYS_MS.length) {
+        await sleep(GEE_RETRY_DELAYS_MS[attempt] + Math.floor(Math.random() * 300));
+        continue;
+      }
+
+      if (message.includes("GEE_RATE_LIMITED") || message.includes("RESOURCE_EXHAUSTED")) {
+        throw new Error(`GEE_RATE_LIMITED: ${lastError || message}`);
+      }
+
+      throw error instanceof Error ? error : new Error(message);
     }
-  );
-  if (!resp.ok) {
-    const t = await resp.text();
-    console.error("GEE value:compute error:", resp.status, t);
-    throw new Error(`GEE compute failed (${resp.status}): ${t}`);
   }
-  return resp.json();
+
+  throw new Error(`GEE_RATE_LIMITED: ${lastError || "GEE compute failed after retries"}`);
 }
 
 function makeGeometry(coords: [number, number][]) {
@@ -403,11 +481,9 @@ async function computeVegetationIndices(token: string, projectId: string, coords
     },
   };
 
-  const [ndviMean, eviMean, canopyMean] = await Promise.all([
-    computeValue(token, projectId, reduceRegion(ndviClipped, geometry, "Reducer.mean")),
-    computeValue(token, projectId, reduceRegion(eviClipped, geometry, "Reducer.mean")),
-    computeValue(token, projectId, reduceRegion(ndviGt, geometry, "Reducer.mean")),
-  ]);
+  const ndviMean = await computeValue(token, projectId, reduceRegion(ndviClipped, geometry, "Reducer.mean"));
+  const eviMean = await computeValue(token, projectId, reduceRegion(eviClipped, geometry, "Reducer.mean"));
+  const canopyMean = await computeValue(token, projectId, reduceRegion(ndviGt, geometry, "Reducer.mean"));
 
   console.log("Vegetation indices:", JSON.stringify({ ndviMean, eviMean, canopyMean }));
 
@@ -524,12 +600,10 @@ async function computeLandSuitability(token: string, projectId: string, coords: 
     },
   };
 
-  const [elevResult, slopeResult, rainfallResult, soilResult] = await Promise.all([
-    computeValue(token, projectId, reduceRegion(srtmClipped, geometry, "Reducer.mean", 30)),
-    computeValue(token, projectId, reduceRegion(slope, geometry, "Reducer.mean", 30)),
-    computeValue(token, projectId, reduceRegion(rainfallClipped, geometry, "Reducer.mean", 5000)),
-    computeValue(token, projectId, reduceRegion(soilOCSurface, geometry, "Reducer.mean", 250)),
-  ]);
+  const elevResult = await computeValue(token, projectId, reduceRegion(srtmClipped, geometry, "Reducer.mean", 30));
+  const slopeResult = await computeValue(token, projectId, reduceRegion(slope, geometry, "Reducer.mean", 30));
+  const rainfallResult = await computeValue(token, projectId, reduceRegion(rainfallClipped, geometry, "Reducer.mean", 5000));
+  const soilResult = await computeValue(token, projectId, reduceRegion(soilOCSurface, geometry, "Reducer.mean", 250));
 
   console.log("Suitability raw:", JSON.stringify({ elevResult, slopeResult, rainfallResult, soilResult }));
 
@@ -712,55 +786,76 @@ serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // analyses is an array of: "land_use", "vegetation", "suitability", "growth_stage"
+    const requested = analyses || ["land_use", "vegetation", "suitability", "growth_stage"];
+    const cacheKey = buildAnalyticsCacheKey(coords, requested);
+    const cached = getCachedAnalytics(cacheKey);
+    if (cached) {
+      return new Response(JSON.stringify({ ...cached, cached: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+      });
+    }
+
     const token = await getGeeAccessToken();
     const projectId = Deno.env.get("GEE_PROJECT_ID") || "earthengine-legacy";
 
-    // analyses is an array of: "land_use", "vegetation", "suitability", "growth_stage"
-    const requested = analyses || ["land_use", "vegetation", "suitability", "growth_stage"];
-
     const results: Record<string, any> = {};
 
-    const promises: Promise<void>[] = [];
-
     if (requested.includes("land_use")) {
-      promises.push(
-        computeLandUse(token, projectId, coords)
-          .then((r) => { results.land_use = r; })
-          .catch((e) => { console.error("Land use error:", e); results.land_use = null; })
-      );
+      try {
+        results.land_use = await computeLandUse(token, projectId, coords);
+      } catch (e) {
+        console.error("Land use error:", e);
+        results.land_use = null;
+      }
     }
     if (requested.includes("vegetation")) {
-      promises.push(
-        computeVegetationIndices(token, projectId, coords)
-          .then((r) => { results.vegetation = r; })
-          .catch((e) => { console.error("Vegetation error:", e); results.vegetation = null; })
-      );
+      try {
+        results.vegetation = await computeVegetationIndices(token, projectId, coords);
+      } catch (e) {
+        console.error("Vegetation error:", e);
+        results.vegetation = null;
+      }
     }
     if (requested.includes("suitability")) {
-      promises.push(
-        computeLandSuitability(token, projectId, coords)
-          .then((r) => { results.suitability = r; })
-          .catch((e) => { console.error("Suitability error:", e); results.suitability = null; })
-      );
+      try {
+        results.suitability = await computeLandSuitability(token, projectId, coords);
+      } catch (e) {
+        console.error("Suitability error:", e);
+        results.suitability = null;
+      }
     }
     if (requested.includes("growth_stage")) {
-      promises.push(
-        computeGrowthStage(token, projectId, coords)
-          .then((r) => { results.growth_stage = r; })
-          .catch((e) => { console.error("Growth stage error:", e); results.growth_stage = null; })
-      );
+      try {
+        results.growth_stage = await computeGrowthStage(token, projectId, coords);
+      } catch (e) {
+        console.error("Growth stage error:", e);
+        results.growth_stage = null;
+      }
     }
 
-    await Promise.all(promises);
+    const hasUsefulData = Object.values(results).some((value) => value !== null);
+    if (hasUsefulData) {
+      setCachedAnalytics(cacheKey, results);
+    }
 
     return new Response(JSON.stringify(results), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
     });
   } catch (e) {
     console.error("gee-analytics error:", e);
-    return new Response(JSON.stringify({ error: "An internal error occurred while computing analytics" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    const message = e instanceof Error ? e.message : String(e);
+    return new Response(JSON.stringify({
+      land_use: null,
+      vegetation: null,
+      suitability: null,
+      growth_stage: null,
+      error: message.includes("GEE_RATE_LIMITED") ? "RATE_LIMITED" : "SERVICE_UNAVAILABLE",
+      fallback: true,
+      message: "Satellite analytics are temporarily busy. Showing cached and non-satellite data where available.",
+    }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
   }
 });
