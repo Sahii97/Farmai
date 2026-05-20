@@ -408,27 +408,35 @@ const MapView = ({ allFields, selectedFields, activeField, flyToField, onFlyToDo
 
   // ── GEE: Load NDVI tile layer (clipped to selected fields) ──────
   const loadGeeNdviTiles = async () => {
-    try {
-      toast.info("Loading NDVI overlay…");
-      const { data, error } = await supabase.functions.invoke("gee-ndvi-tiles");
-      if (error) throw error;
-      if (data?.tileUrl) {
-        // Clear old source/layer before setting new URL (new clip region)
-        const map = mapRef.current;
-        if (map) {
-          try { if (map.getLayer("gee-ndvi-layer")) map.removeLayer("gee-ndvi-layer"); } catch {}
-          try { if (map.getSource("gee-ndvi-source")) map.removeSource("gee-ndvi-source"); } catch {}
+    const maxAttempts = 4;
+    let lastErr: any = null;
+    toast.info("Loading NDVI overlay…");
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const { data, error } = await supabase.functions.invoke("gee-ndvi-tiles");
+        if (error) throw error;
+        if (data?.tileUrl) {
+          const map = mapRef.current;
+          if (map) {
+            try { if (map.getLayer("gee-ndvi-layer")) map.removeLayer("gee-ndvi-layer"); } catch {}
+            try { if (map.getSource("gee-ndvi-source")) map.removeSource("gee-ndvi-source"); } catch {}
+          }
+          setGeeNdviTileUrl(data.tileUrl);
+          toast.success("NDVI layer loaded");
+          return;
         }
-        setGeeNdviTileUrl(data.tileUrl);
-        toast.success("NDVI layer loaded");
-      } else if (data?.error) {
-        throw new Error(data.error);
+        if (data?.error) throw new Error(data.error);
+      } catch (err: any) {
+        lastErr = err;
+        console.warn(`[NDVI] tile fetch attempt ${attempt + 1} failed`, err);
+        if (attempt < maxAttempts - 1) {
+          await new Promise((r) => setTimeout(r, 800 * Math.pow(2, attempt) + Math.random() * 400));
+        }
       }
-    } catch (err: any) {
-      console.error("NDVI tiles error:", err);
-      toast.error("Failed to load NDVI tiles: " + (err?.message || "Unknown error"));
-      setShowNdvi(false);
     }
+    console.error("NDVI tiles error:", lastErr);
+    toast.error("Failed to load NDVI tiles: " + (lastErr?.message || "Unknown error"));
+    setShowNdvi(false);
   };
 
   return (
